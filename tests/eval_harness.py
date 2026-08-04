@@ -2,28 +2,16 @@
 """
 Evaluation harness for the natural-language parsing step.
 
-Runs a fixed set of natural-language requests through the parser and scores two
-different things:
+Scores two things per case:
+  correctness  did the parse land on an acceptable genre, mood, and count?
+               Each case allows a set of values, since more than one mapping is
+               often defensible.
+  consistency  each case runs twice; a parse that changes between runs fails.
 
-  correctness  Did the parse land on an acceptable genre and mood (and the
-               requested count, where the request named one)? Each case lists a
-               *set* of acceptable values, because more than one answer is
-               often defensible — "something chill for studying" is reasonably
-               lofi or ambient, and penalising either would measure taste
-               rather than correctness.
+    python tests/eval_harness.py
+    python tests/eval_harness.py --provider gemini --runs 3
 
-  consistency  Every case runs twice. An LLM is non-deterministic, so a parser
-               that is right once and different the next time is not dependable
-               even though a single-run score would call it correct. This is
-               the property a one-shot eval cannot see.
-
-Usage
------
-    python tests/eval_harness.py                      # uses $LLM_PROVIDER
-    python tests/eval_harness.py --provider gemini
-    python tests/eval_harness.py --runs 3
-
-Exits 0 if every case passes, 1 otherwise, so it can gate CI.
+Exits 0 if every case passes, 1 otherwise.
 """
 
 from __future__ import annotations
@@ -38,11 +26,6 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src import nl_recommender as nl  # noqa: E402
 from src.llm import NLRecommenderError, Provider, build_provider  # noqa: E402
-
-
-# --------------------------------------------------------------------------- #
-# The evaluation set
-# --------------------------------------------------------------------------- #
 
 
 @dataclass(frozen=True)
@@ -105,11 +88,6 @@ EVAL_CASES: Sequence[EvalCase] = (
         note="two-word genre",
     ),
 )
-
-
-# --------------------------------------------------------------------------- #
-# Scoring
-# --------------------------------------------------------------------------- #
 
 
 @dataclass
@@ -183,11 +161,6 @@ def evaluate_all(
     cases: Sequence[EvalCase] = EVAL_CASES,
 ) -> List[CaseResult]:
     return [evaluate_case(c, catalog, provider, runs=runs) for c in cases]
-
-
-# --------------------------------------------------------------------------- #
-# Reporting
-# --------------------------------------------------------------------------- #
 
 
 def _mark(ok: bool) -> str:
@@ -277,7 +250,7 @@ def main() -> int:
         "--runs",
         type=int,
         default=2,
-        help="runs per case; 2+ is needed to measure consistency (default: 2)",
+        help="runs per case, 2 or more measures consistency (default: 2)",
     )
     args = parser.parse_args()
 

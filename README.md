@@ -433,24 +433,48 @@ See [`model_card.md`](model_card.md) for a fuller discussion.
 
 ## 8. Reflection
 
-The base project made the point that a recommender is a scoring rule applied
-consistently, and that the intelligence lives in which features you weight. This
-extension did not change that scoring rule at all — and that turned out to be the
-interesting part.
+## How AI was used during development
 
-What the language model actually contributes is **translation at the edges**: free
-text in, prose out. The decision about which songs to return is still the same
-arithmetic as before, and deliberately so. The first design I considered was
-simply asking the model to recommend songs directly; it would have been far less
-code. It also would have invented songs that are not in the catalog, and there
-would have been no way to explain a ranking or reproduce it. Keeping retrieval
-deterministic is what makes the output defensible.
+I used two AI tools in different roles. Claude in the chat interface acted as a
+planner: mapping the assignment rubric to concrete features, deciding between a
+paid Anthropic backend and a free Gemini one, and debugging environment problems
+such as npm permission errors and invalid model names. Claude Code acted as the
+implementer: it wrote the natural language pipeline, the guardrails, the
+self-check step, and the evaluation harness. My job in the middle was mostly
+review and scope control. At one point I challenged Claude Code on whether it was
+building more than the rubric asked for, and it admitted it had, listing exactly
+where it went beyond the spec. That exchange convinced me that the useful skill
+is not writing the prompt but auditing the output.
 
-The guardrails taught the sharper lesson. Writing the fallback for "the model
-returned a genre that does not exist" forced the realisation that the model
-cannot be trusted to stay inside a vocabulary just because the prompt says so —
-and that the honest response is to substitute *and say so*, rather than either
-crashing or silently pretending. The same reasoning drove the rule that the
-self-check may never return an empty list. Most of the code in this extension is
-not the AI feature; it is the handling of the AI feature being wrong, which is
-roughly the right ratio.
+## One helpful and one flawed suggestion
+
+The most helpful suggestion was switching from the Anthropic API to Gemini's
+free tier when I did not want to pay for API credits, together with the idea of
+a provider interface so the code works with either backend. That single decision
+unblocked the whole project.
+
+The clearest flawed suggestion was the model name. The generated code assumed
+gemini-2.5-flash, which Google rejects for new accounts, and the next guess,
+gemini-3-flash, does not exist either. The AI's knowledge of available models
+was simply out of date. The fix came from ground truth, not from the model: I
+queried Google's live model list with curl and picked gemini-3.5-flash from the
+actual response. A second flaw surfaced in the evaluation harness, which fired
+sixteen API calls back to back. The free tier allows five requests per minute,
+so seven of eight cases failed with 429 quota errors rather than real parsing
+errors. The recorded score of 1/8 measures the rate limit, not the parser. On
+the requests that actually reached the model, the parser was correct and
+consistent.
+
+## Limitations and future improvements
+
+The evaluation result is the biggest known limitation. The harness needs
+throttling and retry logic before its score means anything, and I have left the
+raw failing output in the repository because an honest broken measurement is
+more informative than a polished one. Beyond that, the parser sometimes fills in
+values the user never stated, such as choosing ambient when no genre was
+implied. The guardrail flags this substitution, but it is still a guess dressed
+up as an interpretation. The catalog itself is only ten songs, so retrieval
+quality is capped by the data long before it is capped by the model. Given more
+time I would add rate limit handling to the harness, grow the catalog, and test
+whether a small local model could replace the API entirely, which would remove
+both the quota problem and the dependency on a third party.

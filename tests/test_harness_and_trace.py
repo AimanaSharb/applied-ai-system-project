@@ -1,10 +1,4 @@
-"""
-Tests for the reasoning-trace logger and the eval harness's scoring logic.
-
-The harness normally makes real model calls; here it is driven by a FakeProvider
-so its scoring, consistency detection, and report rendering are all verified
-offline.
-"""
+"""Tests for the trace logger and the eval harness's scoring, driven offline."""
 
 import json
 
@@ -22,11 +16,6 @@ def catalog():
 
 def reply(genre, mood, k):
     return json.dumps({"is_music_request": True, "genre": genre, "mood": mood, "k": k})
-
-
-# --------------------------------------------------------------------------- #
-# Trace logger
-# --------------------------------------------------------------------------- #
 
 
 def test_trace_records_every_pipeline_step(tmp_path, catalog):
@@ -98,11 +87,6 @@ def test_unwritable_trace_path_disables_logging_without_raising(tmp_path):
     trace = trace_mod.build_trace(path=str(blocker / "trace.md"))
     assert trace.enabled is False
     trace.log_answer("this must not raise")  # no exception
-
-
-# --------------------------------------------------------------------------- #
-# Eval harness scoring
-# --------------------------------------------------------------------------- #
 
 
 def test_eval_set_has_enough_cases_and_valid_expectations(catalog):

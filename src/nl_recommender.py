@@ -1,26 +1,11 @@
 """
-Natural-language music recommendations (retrieval-augmented generation).
+Natural-language recommendations.
 
-Pipeline
---------
-1. PARSE      A free-text request ("something chill for studying") is sent to the
-              model, which returns structured JSON: {genre, mood, k}.
-2. GUARDRAIL  The JSON is validated. Genre/mood values that do not exist in
-              data/songs.csv are snapped to the closest valid value, and the user
-              is told about the substitution.
-3. RETRIEVE   The validated fields become a UserProfile, and the *existing*
-              rule-based Recommender ranks the real catalog.
-4. GENERATE   A second model call writes a natural-language answer that is
-              grounded ONLY in the retrieved songs.
-5. VERIFY     A third model call audits the recommendations against the parsed
-              request and may filter or re-rank them (see agent_check.py).
+Free text -> LLM parses it to {genre, mood, k} -> guardrails validate those
+values against songs.csv -> the existing Recommender ranks the real catalog ->
+the LLM writes an answer using only the retrieved songs.
 
-The retrieval step is deliberately not done by the model: the model chooses
-*what to look for*, the deterministic recommender decides *what is returned*.
-That is what keeps the final answer grounded in the catalog.
-
-The model itself is reached through src/llm.py, so this module works unchanged
-against either the Anthropic or the Gemini backend.
+The model picks the query; the rule-based recommender picks the songs.
 """
 
 from __future__ import annotations
@@ -31,10 +16,10 @@ import re
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
-try:  # run as: python src/main.py
+try:
     from recommender import Recommender, Song, UserProfile, load_songs
     from llm import APIUnavailableError, NLRecommenderError, Provider, build_provider
-except ModuleNotFoundError:  # run as: python -m src.main
+except ModuleNotFoundError:
     from src.recommender import Recommender, Song, UserProfile, load_songs
     from src.llm import (
         APIUnavailableError,
@@ -64,14 +49,9 @@ MAX_K = 10
 DEFAULT_CSV = "data/songs.csv"
 
 
-# --------------------------------------------------------------------------- #
-# Catalog vocabulary — the guardrail's source of truth
-# --------------------------------------------------------------------------- #
-
-
 @dataclass
 class Catalog:
-    """The song catalog plus the vocabulary that is actually valid in it."""
+    """The songs plus the genre/mood values that are actually valid in them."""
 
     songs: List[Song]
     genres: List[str]
@@ -106,8 +86,7 @@ class Catalog:
         genres = sorted({s.genre for s in songs})
         moods = sorted({s.mood for s in songs})
 
-        # Target energy is derived from the data rather than hardcoded, so a
-        # "chill" request naturally aims at the energy level chill songs have.
+        # Average the energy of each mood instead of hardcoding a target.
         mood_energy = {
             mood: sum(s.energy for s in songs if s.mood == mood)
             / sum(1 for s in songs if s.mood == mood)
@@ -116,14 +95,9 @@ class Catalog:
         return cls(songs=songs, genres=genres, moods=moods, mood_energy=mood_energy)
 
 
-# --------------------------------------------------------------------------- #
-# Step 1 + 2 — parse and guardrail
-# --------------------------------------------------------------------------- #
-
-
 @dataclass
 class ParsedRequest:
-    """The structured form of a free-text request, after validation."""
+    """A request after parsing and validation."""
 
     genre: str
     mood: str
@@ -156,9 +130,8 @@ allowed lists."""
 
 
 def _extract_json(text: str) -> dict:
-    """Pull the first JSON object out of a model response."""
+    """Pull the first JSON object out of a model reply."""
     text = text.strip()
-    # Tolerate a ```json fence or a stray sentence around the object.
     fenced = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
     if fenced:
         text = fenced.group(1)
@@ -167,7 +140,7 @@ def _extract_json(text: str) -> dict:
         if braced:
             text = braced.group(0)
 
-    data = json.loads(text)  # may raise json.JSONDecodeError
+    data = json.loads(text)
     if not isinstance(data, dict):
         raise json.JSONDecodeError("top-level JSON value is not an object", text, 0)
     return data
@@ -180,7 +153,7 @@ def _snap_to_vocabulary(
     fallback: str,
     warnings: List[str],
 ) -> str:
-    """Coerce a model-supplied value to one that really exists in the catalog."""
+    """Force a model value to one that exists in the catalog."""
     if value is None or not str(value).strip():
         warnings.append(
             f"No {field_name} was implied by your request, so I used '{fallback}'."
@@ -225,7 +198,7 @@ def _coerce_k(value: object, warnings: List[str]) -> int:
 
 
 def validate_parsed(data: dict, catalog: Catalog) -> ParsedRequest:
-    """Apply the output guardrail to raw parsed JSON. Never raises on bad values."""
+    """Validate parsed JSON. Never raises on a bad value."""
     warnings: List[str] = []
 
     is_music = data.get("is_music_request", True)
@@ -253,7 +226,7 @@ def validate_parsed(data: dict, catalog: Catalog) -> ParsedRequest:
 def parse_request(
     text: str, catalog: Catalog, provider: Optional[Provider] = None
 ) -> ParsedRequest:
-    """Turn free text into a validated ParsedRequest via one model call."""
+    """Turn free text into a validated ParsedRequest."""
     if not text or not text.strip():
         raise NLRecommenderError(
             "I did not catch a request — tell me a mood, an activity, or a genre."
@@ -273,7 +246,7 @@ def parse_request(
     try:
         data = _extract_json(raw)
     except json.JSONDecodeError:
-        # Output guardrail: unusable JSON must not crash the app.
+        # Unusable JSON must not crash the app.
         return ParsedRequest(
             genre=catalog.genres[0],
             mood=catalog.moods[0],
@@ -290,11 +263,6 @@ def parse_request(
     return parsed
 
 
-# --------------------------------------------------------------------------- #
-# Step 3 — retrieval (deterministic, via the existing Recommender)
-# --------------------------------------------------------------------------- #
-
-
 @dataclass
 class Recommendation:
     song: Song
@@ -303,7 +271,7 @@ class Recommendation:
 
 
 def retrieve(parsed: ParsedRequest, catalog: Catalog) -> List[Recommendation]:
-    """Rank the real catalog with the existing rule-based Recommender."""
+    """Rank the catalog with the existing rule-based Recommender."""
     target_energy = catalog.mood_energy.get(parsed.mood, 0.5)
     profile = UserProfile(
         favorite_genre=parsed.genre,
@@ -323,7 +291,7 @@ def retrieve(parsed: ParsedRequest, catalog: Catalog) -> List[Recommendation]:
 
 
 def format_catalog_context(recs: Sequence[Recommendation]) -> str:
-    """Render retrieved songs as the only factual context the model may use."""
+    """Render retrieved songs as the only facts the model may use."""
     return "\n".join(
         f'{i}. "{r.song.title}" by {r.song.artist} — genre: {r.song.genre}, '
         f"mood: {r.song.mood}, energy: {r.song.energy}, "
@@ -331,11 +299,6 @@ def format_catalog_context(recs: Sequence[Recommendation]) -> str:
         f"(match score {r.score:.2f})"
         for i, r in enumerate(recs, start=1)
     )
-
-
-# --------------------------------------------------------------------------- #
-# Step 4 — grounded generation
-# --------------------------------------------------------------------------- #
 
 
 GENERATE_SYSTEM = """You are a music recommender writing a short reply to a listener.
@@ -355,7 +318,7 @@ def generate_answer(
     recs: Sequence[Recommendation],
     provider: Optional[Provider] = None,
 ) -> str:
-    """Write the natural-language response, grounded in the retrieved songs."""
+    """Write the reply, grounded in the retrieved songs."""
     if not recs:
         return "I could not find any songs in the catalog for that request."
 
@@ -370,21 +333,16 @@ def generate_answer(
     )
 
 
-# --------------------------------------------------------------------------- #
-# Orchestration
-# --------------------------------------------------------------------------- #
-
-
 @dataclass
 class NLResult:
-    """Everything one natural-language request produced."""
+    """Everything one request produced."""
 
     request: str
     parsed: ParsedRequest
     recommendations: List[Recommendation]
     answer: str
     warnings: List[str] = field(default_factory=list)
-    verdict: Optional[object] = None  # set by the agentic self-check
+    verdict: Optional[object] = None
 
 
 def recommend_from_text(
@@ -396,7 +354,7 @@ def recommend_from_text(
     trace=None,
 ) -> NLResult:
     """Run parse -> guardrail -> retrieve -> verify -> generate."""
-    # Imported here to avoid a circular import at module load time.
+    # Imported here to avoid a circular import.
     try:
         from agent_check import verify_recommendations
     except ModuleNotFoundError:

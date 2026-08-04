@@ -1,23 +1,10 @@
 """
-Agentic self-check: a second model pass that audits the first pass's output.
+Agentic self-check: a second model pass that audits the retrieved songs.
 
-After retrieval, the model is shown the parsed request and the songs that were
-actually retrieved, and asked to judge each one. Songs it judges to be a
-mismatch are dropped; the survivors are re-ranked so confirmed matches come
-first.
-
-Two constraints make this safe rather than just another chance to hallucinate:
-
-1. The verifier chooses from a fixed set of indices. It cannot add a song,
-   rename one, or reference anything outside the retrieved list — the code
-   maps indices back to the original objects.
-2. It can never empty the list. If it rejects everything, the original ranking
-   is kept and the user is told the matches are weak. A recommender that
-   returns nothing is worse than one that returns an honest "these are loose
-   fits".
-
-So the model's judgement is advisory input to a deterministic filter, not a
-direct writer of the output.
+The verifier picks songs by index, so it can only filter or reorder what
+retrieval already found - it cannot add a song. It also never returns an empty
+list; if it rejects everything the original ranking is kept and the user is
+told the matches are weak.
 """
 
 from __future__ import annotations
@@ -26,10 +13,10 @@ import json
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
 
-try:  # run as: python src/main.py
+try:
     from llm import Provider, build_provider
     import nl_recommender as nl
-except ModuleNotFoundError:  # run as: python -m src.main
+except ModuleNotFoundError:
     from src.llm import Provider, build_provider
     from src import nl_recommender as nl
 
@@ -67,8 +54,6 @@ class Assessment:
 
 @dataclass
 class Verdict:
-    """The outcome of the verification step."""
-
     passed: bool
     assessments: List[Assessment] = field(default_factory=list)
     removed: List[str] = field(default_factory=list)
@@ -81,7 +66,9 @@ class Verdict:
         return sum(1 for a in self.assessments if a.matches)
 
 
-def _parse_verdict(raw: str, recs: Sequence["nl.Recommendation"]) -> Tuple[List[Assessment], str, List[str]]:
+def _parse_verdict(
+    raw: str, recs: Sequence["nl.Recommendation"]
+) -> Tuple[List[Assessment], str, List[str]]:
     """Validate the verifier's JSON against the retrieved songs."""
     warnings: List[str] = []
     try:
@@ -110,7 +97,7 @@ def _parse_verdict(raw: str, recs: Sequence["nl.Recommendation"]) -> Tuple[List[
             index = int(item.get("index"))
         except (TypeError, ValueError):
             continue
-        # Guardrail: indices must point at a song we actually retrieved.
+        # An index must point at a song we actually retrieved.
         if not 1 <= index <= len(recs) or index in seen:
             warnings.append(
                 f"The verification step referred to song #{item.get('index')}, "
@@ -132,7 +119,7 @@ def _parse_verdict(raw: str, recs: Sequence["nl.Recommendation"]) -> Tuple[List[
             )
         )
 
-    # Any song the verifier skipped is treated as a match (benefit of the doubt).
+    # A song the verifier skipped gets the benefit of the doubt.
     for i in range(1, len(recs) + 1):
         if i not in seen:
             assessments.append(
@@ -155,7 +142,7 @@ def verify_recommendations(
     catalog: "nl.Catalog",
     provider: Optional[Provider] = None,
 ) -> Tuple[Verdict, List["nl.Recommendation"]]:
-    """Audit `recs` and return (verdict, possibly filtered and re-ranked recs)."""
+    """Audit recs and return (verdict, filtered and reordered recs)."""
     recs = list(recs)
     if not recs:
         return Verdict(passed=True, summary="Nothing to verify."), recs
@@ -172,7 +159,7 @@ def verify_recommendations(
             system=VERIFY_SYSTEM, user=user, max_tokens=800, effort="low"
         )
     except nl.APIUnavailableError as exc:
-        # A failed audit must not sink an otherwise good answer.
+        # A failed audit should not sink an otherwise good answer.
         return (
             Verdict(
                 passed=True,
@@ -199,7 +186,7 @@ def verify_recommendations(
     dropped = [a for a in assessments if not a.matches]
 
     if not kept:
-        # Guardrail: never return an empty list. Be honest instead.
+        # Never return an empty list. Be honest instead.
         warnings.append(
             "The verification step judged none of the retrieved songs to be a "
             "strong match — showing the closest available options anyway."

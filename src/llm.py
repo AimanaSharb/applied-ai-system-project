@@ -1,16 +1,4 @@
-"""
-Provider seam for the one thing this project needs from an LLM: turn a system
-prompt plus a user message into text.
-
-Two backends implement that single method:
-  anthropic (default)  claude-sonnet-4-6      via ANTHROPIC_API_KEY
-  gemini               gemini-2.5-flash       via GEMINI_API_KEY
-
-Select one with the LLM_PROVIDER environment variable. Everything above this
-module is provider-agnostic, so the recommender, the guardrails, the agentic
-self-check, and the test harness are written once and run against either
-backend. Tests substitute a FakeProvider and never touch the network.
-"""
+"""LLM backends. Anthropic by default, Gemini optional, set with LLM_PROVIDER."""
 
 from __future__ import annotations
 
@@ -19,30 +7,24 @@ from typing import Optional
 
 
 class NLRecommenderError(Exception):
-    """Raised for conditions the caller is expected to show to the user."""
+    """An error we expect to show the user."""
 
 
 class APIUnavailableError(NLRecommenderError):
-    """The model API could not be reached, is misconfigured, or refused."""
+    """The model API is unreachable, misconfigured, or refused."""
 
 
 class Provider:
-    """Interface every backend implements."""
+    """Base class for a model backend."""
 
     name = "provider"
     model = "unknown"
 
     def complete(self, system: str, user: str, max_tokens: int, effort: str) -> str:
-        """Return the model's text response. Raise APIUnavailableError on failure."""
         raise NotImplementedError
 
     def describe(self) -> str:
         return f"{self.name} ({self.model})"
-
-
-# --------------------------------------------------------------------------- #
-# Anthropic
-# --------------------------------------------------------------------------- #
 
 
 class AnthropicProvider(Provider):
@@ -110,12 +92,7 @@ class AnthropicProvider(Provider):
         return _require_text(text)
 
 
-# --------------------------------------------------------------------------- #
-# Gemini
-# --------------------------------------------------------------------------- #
-
-# The Anthropic 'effort' levels have no direct Gemini equivalent; they are
-# mapped onto a thinking-token budget instead.
+# Gemini has no 'effort' setting, so map it onto a thinking-token budget.
 _GEMINI_THINKING_BUDGET = {"low": 0, "medium": 512, "high": 2048}
 
 
@@ -141,9 +118,7 @@ class GeminiProvider(Provider):
             self._client = client
             return
 
-        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get(
-            "GOOGLE_API_KEY"
-        )
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
         if not api_key:
             raise APIUnavailableError(
                 "GEMINI_API_KEY is not set. Get a free key at "
@@ -175,15 +150,11 @@ class GeminiProvider(Provider):
             ) from exc
         except self._errors.APIError as exc:
             raise APIUnavailableError(f"The Gemini API returned an error: {exc}") from exc
-        except Exception as exc:  # network/DNS failures surface as generic errors
+        except Exception as exc:
             raise APIUnavailableError(f"Could not reach the Gemini API: {exc}") from exc
 
         return _require_text(response.text or "")
 
-
-# --------------------------------------------------------------------------- #
-# Selection
-# --------------------------------------------------------------------------- #
 
 PROVIDERS = {"anthropic": AnthropicProvider, "gemini": GeminiProvider}
 
@@ -195,7 +166,7 @@ def _require_text(text: str) -> str:
 
 
 def build_provider(name: Optional[str] = None, **kwargs) -> Provider:
-    """Construct the configured provider. Defaults to Anthropic."""
+    """Build the configured provider. Defaults to Anthropic."""
     name = (name or os.environ.get("LLM_PROVIDER") or "anthropic").strip().lower()
     if name not in PROVIDERS:
         raise NLRecommenderError(
@@ -206,11 +177,7 @@ def build_provider(name: Optional[str] = None, **kwargs) -> Provider:
 
 
 class FakeProvider(Provider):
-    """Scripted provider for tests — never touches the network.
-
-    Pass a list of replies (returned in order) or a callable that receives
-    (system, user) and returns a reply.
-    """
+    """Scripted provider for tests. Takes a list of replies or a callable."""
 
     name = "fake"
     model = "fake-model"

@@ -1,14 +1,7 @@
 """
-Append-only reasoning log for the agentic pipeline.
+Writes each pipeline step's reasoning to logs/agent_trace.md.
 
-Every step writes what it decided and why to logs/agent_trace.md, so a run can
-be audited after the fact: what the parse step extracted, what retrieval
-returned and with what scores, what the verification step judged, and what the
-user finally saw. This is the artifact referenced from ai_interactions.md.
-
-The logger is deliberately best-effort: if the log cannot be written (read-only
-directory, bad permissions) the run continues. Losing an audit line is not a
-reason to fail a recommendation.
+Best effort: if the log cannot be written, the run continues.
 """
 
 from __future__ import annotations
@@ -21,7 +14,7 @@ DEFAULT_PATH = os.path.join("logs", "agent_trace.md")
 
 
 class AgentTrace:
-    """Writes one Markdown section per request to the trace log."""
+    """Appends one Markdown section per request."""
 
     def __init__(self, path: str = DEFAULT_PATH, provider_label: str = "unknown"):
         self.path = path
@@ -42,8 +35,6 @@ class AgentTrace:
         except OSError:
             self.enabled = False
 
-    # -- low-level ---------------------------------------------------------- #
-
     def _raw(self, text: str) -> None:
         if not self.enabled:
             return
@@ -57,8 +48,6 @@ class AgentTrace:
         self._step += 1
         body = "\n".join(f"- {line}" for line in lines)
         self._raw(f"\n### Step {self._step} — {name}\n\n{body}\n")
-
-    # -- pipeline steps ----------------------------------------------------- #
 
     def start(self, request: str) -> None:
         self._step = 0
@@ -79,7 +68,9 @@ class AgentTrace:
         for warning in parsed.warnings:
             lines.append(f"**Guardrail:** {warning}")
         if not parsed.warnings:
-            lines.append("**Guardrail:** all values valid in songs.csv; no correction needed.")
+            lines.append(
+                "**Guardrail:** all values valid in songs.csv; no correction needed."
+            )
         self._write_step("Parse + guardrail validation", lines)
 
     def log_rejected(self, request: str, parsed) -> None:
@@ -87,7 +78,7 @@ class AgentTrace:
             "Rejected",
             [
                 "The parse step flagged this as not a music request.",
-                "Pipeline stopped before retrieval; no model call was made to generate an answer.",
+                "Pipeline stopped before retrieval; no answer was generated.",
             ],
         )
 
@@ -106,13 +97,16 @@ class AgentTrace:
 
     def log_verification(self, verdict, recs) -> None:
         lines = [
-            f"**Verdict:** {'pass — all retrieved songs match' if verdict.passed else 'issues found'}",
+            "**Verdict:** "
+            + ("pass — all retrieved songs match" if verdict.passed else "issues found")
         ]
         if verdict.summary:
             lines.append(f"**Model's summary:** {verdict.summary}")
         for a in verdict.assessments:
             mark = "match" if a.matches else "MISMATCH"
-            lines.append(f"  {a.index}. {a.title} — {mark}: {a.reason or 'no reason given'}")
+            lines.append(
+                f"  {a.index}. {a.title} — {mark}: {a.reason or 'no reason given'}"
+            )
         if verdict.removed:
             lines.append(f"**Filtered out:** {', '.join(verdict.removed)}")
         for warning in verdict.warnings:
@@ -134,5 +128,5 @@ class AgentTrace:
 def build_trace(
     path: str = DEFAULT_PATH, provider_label: str = "unknown", enabled: bool = True
 ) -> Optional[AgentTrace]:
-    """Return a trace logger, or None when tracing is disabled."""
+    """Return a trace logger, or None if tracing is off."""
     return AgentTrace(path=path, provider_label=provider_label) if enabled else None

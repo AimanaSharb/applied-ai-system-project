@@ -1,7 +1,4 @@
-"""
-Unit tests for the AI layer. Every model call is mocked via FakeProvider, so the
-whole suite runs offline with no API key and makes no network requests.
-"""
+"""Tests for the AI layer. All model calls are mocked, so this runs offline."""
 
 import json
 
@@ -43,11 +40,6 @@ def all_match(n):
     return verify_reply([{"index": i, "matches": True, "reason": "fits"} for i in range(1, n + 1)])
 
 
-# --------------------------------------------------------------------------- #
-# Catalog
-# --------------------------------------------------------------------------- #
-
-
 def test_catalog_vocabulary_comes_from_the_csv(catalog):
     assert "lofi" in catalog.genres
     assert "chill" in catalog.moods
@@ -64,11 +56,6 @@ def test_catalog_derives_target_energy_per_mood(catalog):
 def test_missing_csv_raises_a_handled_error():
     with pytest.raises(NLRecommenderError):
         nl.Catalog.load("data/does_not_exist.csv")
-
-
-# --------------------------------------------------------------------------- #
-# Parsing
-# --------------------------------------------------------------------------- #
 
 
 def test_parse_extracts_structured_fields(catalog):
@@ -99,11 +86,6 @@ def test_empty_input_is_rejected_without_calling_the_model(catalog):
         with pytest.raises(NLRecommenderError):
             nl.parse_request(text, catalog, provider=provider)
     assert provider.calls == []
-
-
-# --------------------------------------------------------------------------- #
-# Output guardrail
-# --------------------------------------------------------------------------- #
 
 
 def test_unparseable_json_falls_back_instead_of_crashing(catalog):
@@ -154,11 +136,6 @@ def test_string_boolean_for_is_music_request_is_coerced(catalog):
     assert nl.validate_parsed({"is_music_request": "true"}, catalog).is_music_request is True
 
 
-# --------------------------------------------------------------------------- #
-# Retrieval
-# --------------------------------------------------------------------------- #
-
-
 def test_retrieval_returns_only_real_catalog_songs(catalog):
     parsed = nl.ParsedRequest(genre="lofi", mood="chill", k=3)
     recs = nl.retrieve(parsed, catalog)
@@ -196,11 +173,6 @@ def test_context_block_lists_every_retrieved_song(catalog):
         assert rec.song.artist in context
 
 
-# --------------------------------------------------------------------------- #
-# Grounded generation
-# --------------------------------------------------------------------------- #
-
-
 def test_generation_is_given_only_retrieved_songs(catalog):
     recs = nl.retrieve(nl.ParsedRequest(genre="jazz", mood="relaxed", k=2), catalog)
     provider = FakeProvider([GENERATED])
@@ -218,11 +190,6 @@ def test_generation_with_no_results_does_not_call_the_model():
     answer = nl.generate_answer("anything", [], provider=provider)
     assert "could not find" in answer.lower()
     assert provider.calls == []
-
-
-# --------------------------------------------------------------------------- #
-# Agentic self-check
-# --------------------------------------------------------------------------- #
 
 
 def test_verifier_filters_the_song_it_rejects(catalog):
@@ -314,11 +281,6 @@ def test_verifier_api_failure_does_not_sink_the_answer(catalog):
     assert any("simulated outage" in w for w in verdict.warnings)
 
 
-# --------------------------------------------------------------------------- #
-# End-to-end orchestration
-# --------------------------------------------------------------------------- #
-
-
 def test_full_pipeline_makes_three_calls_in_order(catalog):
     provider = FakeProvider([parse_reply("lofi", "chill", 3), all_match(3), GENERATED])
     result = nl.recommend_from_text(
@@ -363,11 +325,6 @@ def test_guardrail_warnings_reach_the_result(catalog):
     result = nl.recommend_from_text("some reggaeton", catalog=catalog, provider=provider)
     assert result.warnings
     assert result.parsed.genre in catalog.genres
-
-
-# --------------------------------------------------------------------------- #
-# Provider selection
-# --------------------------------------------------------------------------- #
 
 
 def test_unknown_provider_is_rejected():
