@@ -1,1 +1,103 @@
+%% Music Recommender Simulation — actual data flow.
+%% Mirrors src/main.py, src/nl_recommender.py, src/agent_check.py, src/llm.py.
+%% Diamonds are real branches in the code; dashed edges are fallback paths.
 
+flowchart TD
+    START(["User runs src/main.py"]) --> MODE{"--classic flag?"}
+
+    %% ---------------- classic, non-AI path ----------------
+    MODE -->|"yes"| CLASSIC["run_classic()<br/>fixed profile: pop / happy / 0.8"]
+    CLASSIC --> CSV1[("data/songs.csv")]
+    CSV1 --> SCORE1["recommend_songs()<br/>rule-based scoring"]
+    SCORE1 --> OUT(["Ranked songs + template explanations"])
+
+    %% ---------------- AI path: provider setup ----------------
+    MODE -->|"no"| PROV{"build_provider()<br/>LLM_PROVIDER / --provider"}
+    PROV -.->|"no API key<br/>or unknown provider"| FAILSTART(["Message naming the missing<br/>env var + '--classic' hint<br/>exit 1"])
+    PROV -->|"anthropic or gemini"| ASK["Prompt: 'What are you in the mood for?'"]
+
+    ASK --> EMPTY{"input blank?"}
+    EMPTY -.->|"yes"| REPROMPT(["'I did not catch a request…'<br/>re-prompt, no model call"])
+    EMPTY -->|"no"| PARSE
+
+    %% ---------------- step 1: LLM parse ----------------
+    subgraph S1 ["Step 1 — parse (LLM call 1 of 3)"]
+        PARSE["parse_request()<br/>prompt lists the catalog's real<br/>genres + moods"] --> LLM1{{"Model returns JSON:<br/>genre, mood, k, is_music_request"}}
+    end
+
+    LLM1 -.->|"API error / refusal /<br/>empty response"| APIERR(["APIUnavailableError shown as<br/>a plain message,<br/>never a traceback"])
+    LLM1 --> JSONOK{"valid JSON?"}
+
+    %% ---------------- step 2: guardrail ----------------
+    subgraph S2 ["Step 2 — output guardrail (no model call)"]
+        JSONOK -.->|"no"| DEFAULT["Fall back to first valid<br/>genre + mood, k = 5<br/>+ warning"]
+        JSONOK -->|"yes"| VALIDATE["validate_parsed()"]
+        VALIDATE --> VOCAB{"genre & mood exist<br/>in songs.csv?"}
+        VOCAB -.->|"close match<br/>difflib >= 0.6"| SNAP["Snap to nearest valid value<br/>+ warning"]
+        VOCAB -.->|"no match"| FALLBACK["Fall back to first valid value<br/>+ warning"]
+        VOCAB -->|"exact"| CLAMP
+        SNAP --> CLAMP
+        FALLBACK --> CLAMP
+        DEFAULT --> CLAMP["Clamp k to 1..10"]
+    end
+
+    CLAMP --> MUSIC{"is_music_request?"}
+    MUSIC -.->|"false"| REJECT(["'That does not look like a<br/>music request…'<br/>stops before retrieval"])
+    MUSIC -->|"true"| RETRIEVE
+
+    %% ---------------- step 3: deterministic retrieval ----------------
+    subgraph S3 ["Step 3 — retrieval (deterministic, no model call)"]
+        RETRIEVE["retrieve()<br/>UserProfile from parsed fields;<br/>target_energy averaged from the mood"] --> CSV2[("data/songs.csv")]
+        CSV2 --> RANK["Recommender.recommend()<br/>genre +2.0, mood +1.5,<br/>energy closeness, acoustic bonus"]
+        RANK --> TOPK["Top-k songs + scores<br/>+ template explanations"]
+    end
+
+    %% ---------------- step 4: agentic self-check ----------------
+    TOPK --> VERIFYON{"--no-verify?"}
+    VERIFYON -->|"yes"| GEN
+    VERIFYON -->|"no"| VERIFY
+
+    subgraph S4 ["Step 4 — agentic self-check (LLM call 2 of 3)"]
+        VERIFY["verify_recommendations()<br/>shown the request + retrieved songs only"] --> LLM2{{"Model judges each song<br/>by index: match / mismatch"}}
+        LLM2 -.->|"API error or<br/>invalid JSON"| KEEPALL["Keep the original ranking<br/>+ warning"]
+        LLM2 --> IDXOK{"indices refer to<br/>retrieved songs?"}
+        IDXOK -.->|"out of range"| IGNORE["Ignore that judgement<br/>+ warning"]
+        IDXOK -->|"valid"| ANYMATCH{"any song judged<br/>a match?"}
+        ANYMATCH -.->|"none"| HONEST["Keep all + warn that matches<br/>are weak<br/>(never returns an empty list)"]
+        ANYMATCH -->|"some"| FILTER["Drop mismatches,<br/>matches first"]
+    end
+
+    KEEPALL --> GEN
+    IGNORE --> GEN
+    HONEST --> GEN
+    FILTER --> GEN
+
+    %% ---------------- step 5: grounded generation ----------------
+    subgraph S5 ["Step 5 — grounded generation (LLM call 3 of 3)"]
+        GEN["generate_answer()<br/>context = retrieved songs ONLY;<br/>no other song may be named"] --> LLM3{{"Model writes prose<br/>+ one line per song"}}
+    end
+
+    LLM3 -.-> APIERR
+    LLM3 --> RESULT(["Parsed fields + guardrail warnings<br/>+ ranked songs + grounded answer"])
+
+    %% ---------------- cross-cutting audit log ----------------
+    TRACE[/"src/trace.py -> logs/agent_trace.md<br/>one section per request"/]
+    PARSE -.-> TRACE
+    CLAMP -.-> TRACE
+    TOPK -.-> TRACE
+    VERIFY -.-> TRACE
+    RESULT -.-> TRACE
+    REJECT -.-> TRACE
+    APIERR -.-> TRACE
+
+    classDef llm fill:#e8dff5,stroke:#7b5ea7,color:#2b2b2b
+    classDef guard fill:#fdf0d5,stroke:#c08a2e,color:#2b2b2b
+    classDef data fill:#dbeddb,stroke:#4a7c4a,color:#2b2b2b
+    classDef bad fill:#f8d7da,stroke:#a94442,color:#2b2b2b
+    classDef done fill:#d7e8f5,stroke:#31708f,color:#2b2b2b
+
+    class LLM1,LLM2,LLM3 llm
+    class DEFAULT,SNAP,FALLBACK,CLAMP,KEEPALL,IGNORE,HONEST,FILTER guard
+    class CSV1,CSV2,RANK,SCORE1,TOPK,TRACE data
+    class FAILSTART,REPROMPT,APIERR,REJECT bad
+    class OUT,RESULT done
