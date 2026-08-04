@@ -1,3 +1,8 @@
+# Core
+anthropic>=0.69.0        # default LLM backend (Claude)
+google-genai>=1.0.0      # optional alternative backend (Gemini free tier)
+pytest>=8.0.0            # test suite and eval harness
+
+# Retained from the original project
 pandas
-pytest
 streamlit
